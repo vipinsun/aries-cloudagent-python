@@ -9,10 +9,6 @@ from typing import Optional, List, Sequence, Tuple, Union
 
 from aries_askar import (
     crypto_box,
-    crypto_box_open,
-    crypto_box_random_nonce,
-    crypto_box_seal,
-    crypto_box_seal_open,
     AskarError,
     AskarErrorCode,
     Key,
@@ -670,9 +666,9 @@ def pack_message(
             KeyAlg.ED25519, b58_to_bytes(target_vk)
         ).convert_key(KeyAlg.X25519)
         if sender_vk:
-            enc_sender = crypto_box_seal(target_xk, sender_vk)
-            nonce = crypto_box_random_nonce()
-            enc_cek = crypto_box(target_xk, sender_xk, cek_b, nonce)
+            enc_sender = crypto_box.crypto_box_seal(target_xk, sender_vk)
+            nonce = crypto_box.random_nonce()
+            enc_cek = crypto_box.crypto_box(target_xk, sender_xk, cek_b, nonce)
             wrapper.add_recipient(
                 JweRecipient(
                     encrypted_key=enc_cek,
@@ -688,7 +684,7 @@ def pack_message(
         else:
             enc_sender = None
             nonce = None
-            enc_cek = crypto_box_seal(target_xk, cek_b)
+            enc_cek = crypto_box.crypto_box_seal(target_xk, cek_b)
             wrapper.add_recipient(
                 JweRecipient(encrypted_key=enc_cek, header={"kid": target_vk})
             )
@@ -702,10 +698,8 @@ def pack_message(
         ),
         auto_flatten=False,
     )
-    nonce = cek.aead_random_nonce()
-    ciphertext = cek.aead_encrypt(message, nonce, wrapper.protected_bytes)
-    tag = ciphertext[-16:]
-    ciphertext = ciphertext[:-16]
+    enc = cek.aead_encrypt(message, aad=wrapper.protected_bytes)
+    ciphertext, tag, nonce = enc.parts
     wrapper.set_payload(ciphertext, nonce, tag)
     return wrapper.to_json().encode("utf-8")
 
@@ -740,8 +734,12 @@ async def unpack_message(session: Session, enc_message: bytes) -> Tuple[str, str
         raise WalletError("Sender public key not provided for Authcrypt message")
 
     cek = Key.from_secret_bytes(KeyAlg.C20P, payload_key)
-    ciphertext = wrapper.ciphertext + wrapper.tag
-    message = cek.aead_decrypt(ciphertext, wrapper.iv, wrapper.protected_bytes)
+    message = cek.aead_decrypt(
+        wrapper.ciphertext,
+        nonce=wrapper.iv,
+        tag=wrapper.tag,
+        aad=wrapper.protected_bytes,
+    )
     return message, recip_vk, sender_vk
 
 
@@ -754,12 +752,16 @@ def extract_payload_key(sender_cek: dict, recip_secret: Key) -> Tuple[bytes, str
     recip_x = recip_secret.convert_key(KeyAlg.X25519)
 
     if sender_cek["nonce"] and sender_cek["sender"]:
-        sender_vk = crypto_box_seal_open(recip_x, sender_cek["sender"]).decode("utf-8")
+        sender_vk = crypto_box.crypto_box_seal_open(
+            recip_x, sender_cek["sender"]
+        ).decode("utf-8")
         sender_x = Key.from_public_bytes(
             KeyAlg.ED25519, b58_to_bytes(sender_vk)
         ).convert_key(KeyAlg.X25519)
-        cek = crypto_box_open(recip_x, sender_x, sender_cek["key"], sender_cek["nonce"])
+        cek = crypto_box.crypto_box_open(
+            recip_x, sender_x, sender_cek["key"], sender_cek["nonce"]
+        )
     else:
         sender_vk = None
-        cek = crypto_box_seal_open(recip_x, sender_cek["key"])
+        cek = crypto_box.crypto_box_seal_open(recip_x, sender_cek["key"])
     return cek, sender_vk
